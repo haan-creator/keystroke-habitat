@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>身體簽名 Body Signature</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js" integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb" crossorigin="anonymous"></script>
+<style>
+@font-face {
+  font-family: 'Anton';
+  src: url('Anton-Regular.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{overflow:hidden;background:#0a0a0a;touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
+  canvas{display:block;}
+  button.kb-btn{font-family:'Courier New',monospace;background:#111;color:#888;border:1px solid #222;border-radius:3px;cursor:pointer;position:absolute;transition:background 0.08s,color 0.08s,transform 0.06s;-webkit-tap-highlight-color:transparent;user-select:none;}
+  button.kb-btn:active{transform:scale(0.93);background:#1a1a1a;}
+  button.ctrl-btn{font-family:'Courier New',monospace;background:transparent;color:#666;border:1px solid #333;border-radius:2px;cursor:pointer;position:absolute;letter-spacing:0.08em;transition:color 0.2s,border-color 0.2s;-webkit-tap-highlight-color:transparent;user-select:none;}
+  button.ctrl-btn:hover{color:#aaa;border-color:#555;}
+  button#startBtn{color:#fff;border:2px solid rgba(255,255,255,0.95);background:rgba(0,0,0,0.35);letter-spacing:0.2em;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,0.8);}
+  button#startBtn:hover{color:#fff;border-color:#fff;background:rgba(0,0,0,0.55);}
+</style>
+</head>
+<body>
+<!-- 預先觸發字體載入，讓瀏覽器在 p5 啟動前就下載好 -->
+<div style="position:absolute;visibility:hidden;font-family:'Anton';">.</div>
+<script>
+// ── Audio Engine ──
+// Synth pad (detuned dual osc) + pluck + reverb + drone
+// C minor pentatonic across 3 octaves
+let audioCtx=null;
+let reverbNode=null;
+let droneGain=null;
+let droneActive=false;
+
+function initAudio(){
+  if(!audioCtx){
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    // ── Reverb (convolver with synthetic impulse) ──
+    reverbNode=audioCtx.createConvolver();
+    const sRate=audioCtx.sampleRate;
+    const len=sRate*2.5; // 2.5 秒殘響
+    const impulse=audioCtx.createBuffer(2,len,sRate);
+    for(let ch=0;ch<2;ch++){
+      const data=impulse.getChannelData(ch);
+      for(let i=0;i<len;i++){
+        // 指數衰減 + 隨機噪音 = 自然殘響
+        data[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.2);
+      }
+    }
+    reverbNode.buffer=impulse;
+    reverbNode.connect(audioCtx.destination);
+  }
+  if(audioCtx.state==='suspended')audioCtx.resume();
+}
+
+function startDrone(){
+  if(!audioCtx||droneActive)return;
+  droneActive=true;
+  // C2 (65.41 Hz) drone — 兩個微失諧的 oscillator
+  const t=audioCtx.currentTime;
+  droneGain=audioCtx.createGain();
+  droneGain.gain.setValueAtTime(0,t);
+  droneGain.gain.linearRampToValueAtTime(0.06,t+2); // 慢慢淡入
+  
+  const d1=audioCtx.createOscillator();
+  d1.type='sine';d1.frequency.setValueAtTime(65.41,t);
+  const d2=audioCtx.createOscillator();
+  d2.type='sine';d2.frequency.setValueAtTime(65.41*1.002,t); // 微失諧
+  const d3=audioCtx.createOscillator();
+  d3.type='sine';d3.frequency.setValueAtTime(130.81,t); // C3 泛音
+  const d3g=audioCtx.createGain();d3g.gain.setValueAtTime(0.3,t);
+  
+  d1.connect(droneGain);d2.connect(droneGain);d3.connect(d3g);d3g.connect(droneGain);
+  droneGain.connect(audioCtx.destination);
+  // 也送一點進 reverb
+  const droneRvSend=audioCtx.createGain();droneRvSend.gain.setValueAtTime(0.03,t);
+  droneGain.connect(droneRvSend);droneRvSend.connect(reverbNode);
+  
+  d1.start(t);d2.start(t);d3.start(t);
+}
+function stopDrone(){
+  if(!droneActive||!droneGain)return;
+  const t=audioCtx.currentTime;
+  droneGain.gain.linearRampToValueAtTime(0,t+1.5);
+  droneActive=false;
+}
+
+function playTone(freq,dur){
+  if(!audioCtx)return;
+  const t=audioCtx.currentTime;
+  
+  // ── Layer 1: Pad (兩個微失諧 osc = chorus 效果) ──
+  const pad1=audioCtx.createOscillator();
+  const pad2=audioCtx.createOscillator();
+  pad1.type='sine'; pad2.type='triangle';
+  pad1.frequency.setValueAtTime(freq,t);
+  pad2.frequency.setValueAtTime(freq*1.003,t); // 微失諧
+  
+  const padGain=audioCtx.createGain();
+  padGain.gain.setValueAtTime(0,t);
+  padGain.gain.linearRampToValueAtTime(0.12,t+0.05);
+  padGain.gain.linearRampToValueAtTime(0.08,t+dur*0.3);
+  padGain.gain.exponentialRampToValueAtTime(0.001,t+dur*1.8); // 長尾巴
+  
+  pad1.connect(padGain);pad2.connect(padGain);
+  padGain.connect(audioCtx.destination);
+  // 送進 reverb
+  const padRvSend=audioCtx.createGain();
+  padRvSend.gain.setValueAtTime(0.15,t);
+  padGain.connect(padRvSend);padRvSend.connect(reverbNode);
+  
+  pad1.start(t);pad2.start(t);
+  pad1.stop(t+dur*2);pad2.stop(t+dur*2);
+  
+  // ── Layer 2: Pluck (短促金屬感打點) ──
+  const pluck=audioCtx.createOscillator();
+  pluck.type='square';
+  pluck.frequency.setValueAtTime(freq*2,t); // 高一個八度
+  
+  const pluckFilter=audioCtx.createBiquadFilter();
+  pluckFilter.type='lowpass';
+  pluckFilter.frequency.setValueAtTime(3000,t);
+  pluckFilter.frequency.exponentialRampToValueAtTime(300,t+0.15); // 快速關閉 = pluck 感
+  
+  const pluckGain=audioCtx.createGain();
+  pluckGain.gain.setValueAtTime(0.08,t);
+  pluckGain.gain.exponentialRampToValueAtTime(0.001,t+0.2);
+  
+  pluck.connect(pluckFilter);pluckFilter.connect(pluckGain);
+  pluckGain.connect(audioCtx.destination);
+  // pluck 也送一點 reverb
+  const pluckRvSend=audioCtx.createGain();
+  pluckRvSend.gain.setValueAtTime(0.1,t);
+  pluckGain.connect(pluckRvSend);pluckRvSend.connect(reverbNode);
+  
+  pluck.start(t);pluck.stop(t+0.25);
+}
+
+// ── Mappings ──
+// C minor pentatonic: C Eb F G Bb 跨 3 個八度 = 15 個音，加延伸到 26 個
+const alphabet='abcdefghijklmnopqrstuvwxyz';
+const cMinPenta=[
+  130.81, 155.56, 174.61, 196.00, 233.08,  // C3 Eb3 F3 G3 Bb3
+  261.63, 311.13, 349.23, 392.00, 466.16,  // C4 Eb4 F4 G4 Bb4
+  523.25, 622.25, 698.46, 783.99, 932.33,  // C5 Eb5 F5 G5 Bb5
+  1046.50, 1174.66, 1396.91,               // C6 Eb6 F6
+  293.66, 440.00, 554.37, 659.25, 369.99,  // 額外填充：用音階內的音
+  246.94, 493.88, 587.33                    // 繼續填充
+];
+let _seed=42;function sR(){_seed=(_seed*16807)%2147483647;return _seed/2147483647;}
+const _idx=Array.from({length:26},(_,i)=>i);for(let i=25;i>0;i--){let j=Math.floor(sR()*(i+1));[_idx[i],_idx[j]]=[_idx[j],_idx[i]];}
+const letterFreq={};for(let i=0;i<26;i++)letterFreq[alphabet[i]]=cMinPenta[_idx[i]];
+const letterHue={};const hP=Array.from({length:26},(_,i)=>(i*360/26));_seed=137;
+for(let i=25;i>0;i--){let j=Math.floor(sR()*(i+1));[hP[i],hP[j]]=[hP[j],hP[i]];}
+for(let i=0;i<26;i++)letterHue[alphabet[i]]=hP[i];
+
+// ── State ──
+let letterCount={};let letterSequence=[],pauseSequence=[],lastPressTime=0;
+let mode='start'; // 'start'|'input'|'transition1'|'playback'|'transition2'|'summary'
+let transitionEnterTime=0;
+let playIndex=0,playTimer=0,isPlaying=false;
+let particles=[],kbButtons=[],ctrlBtnEls=[];
+const rows=['qwertyuiop','asdfghjkl','zxcvbnm'];
+let W,H,kbTop,kbBtnW,kbBtnH,kbGap;
+let currentPulse=0,currentPlayHue=0;
+let summaryEnterTime=0,autoSummaryScheduled=false,hasSeenSummary=false;
+let ripples=[]; // {r,hue,c,alpha,speed}
+let fallers=[]; // {x,y,vy,hue,c,size,alpha,landed} — 從折線墜落的字母
+
+function setup(){W=windowWidth;H=windowHeight;createCanvas(W,H);colorMode(HSB,360,100,100,100);for(let c of alphabet)letterCount[c]=0;layoutKB();buildKB();buildCtrls();}
+function layoutKB(){kbGap=W*0.008;kbBtnW=(W-kbGap*11)/10;kbBtnH=min(H*0.068,52);kbTop=H*0.64;}
+function buildKB(){
+  kbButtons.forEach(b=>b.remove());kbButtons=[];
+  for(let r=0;r<rows.length;r++){let row=rows[r],rbw=r===2?(W-kbGap*8)/7:kbBtnW;let rw=row.length*(rbw+kbGap)-kbGap,sx=(W-rw)/2,y=kbTop+r*(kbBtnH+kbGap);
+    for(let i=0;i<row.length;i++){let c=row[i],x=sx+i*(rbw+kbGap);let btn=document.createElement('button');btn.className='kb-btn';btn.textContent=c;
+      Object.assign(btn.style,{left:x+'px',top:y+'px',width:rbw+'px',height:kbBtnH+'px',fontSize:Math.floor(kbBtnH*0.38)+'px'});
+      let letter=c;btn.addEventListener('pointerdown',(e)=>{e.preventDefault();initAudio();pressLetter(letter);let h=letterHue[letter];btn.style.color=`hsl(${h},70%,75%)`;btn.style.background=`hsl(${h},30%,12%)`;btn.style.borderColor=`hsl(${h},40%,25%)`;setTimeout(()=>{btn.style.color='#888';btn.style.background='#111';btn.style.borderColor='#222';},150);});
+      document.body.appendChild(btn);kbButtons.push(btn);}}
+}
+function buildCtrls(){
+  ctrlBtnEls.forEach(b=>b.remove());ctrlBtnEls=[];
+  let btnY=H*0.93,btnH=Math.min(H*0.05,42),fs=Math.floor(Math.min(H*0.02,15))+'px';
+  function makeBtn(id,label,lp,wp,handler){let b=document.createElement('button');b.className='ctrl-btn';b.id=id;b.textContent=label;Object.assign(b.style,{left:(W*lp)+'px',top:btnY+'px',width:(W*wp)+'px',height:btnH+'px',fontSize:fs});b.addEventListener('pointerdown',(e)=>{e.preventDefault();handler();});document.body.appendChild(b);ctrlBtnEls.push(b);}
+  makeBtn('startBtn','開始',0.2,0.6,enterInput);
+  makeBtn('resetBtn','重來',0.06,0.25,resetAll);
+  makeBtn('doneBtn','看結果 →',0.55,0.38,showResult);
+  makeBtn('pbReplayBtn','▶ 再聽一次',0.04,0.28,function(){startPlayback();});
+  makeBtn('pbSummaryBtn','◉ 看報告',0.36,0.28,showSummary);
+  makeBtn('pbRestartBtn','↺ 重來',0.68,0.28,resetAll);
+  makeBtn('sumReplayBtn','▶ 重聽',0.06,0.42,replayFromSummary);
+  makeBtn('sumRestartBtn','↺ 重來',0.52,0.42,resetAll);
+  hideAllCtrls();
+  // 初始狀態：start mode
+  document.getElementById('startBtn').style.display='';
+  kbButtons.forEach(b=>b.style.display='none');
+}
+function pressLetter(c){if(mode!=='input')return;let now=millis();pauseSequence.push(lastPressTime>0?min(now-lastPressTime,4000):200);lastPressTime=now;letterCount[c]++;letterSequence.push(c);playTone(letterFreq[c],0.45);for(let i=0;i<3;i++){particles.push({x:W/2+random(-W*0.3,W*0.3),y:H*0.3+random(-H*0.08,H*0.08),vx:random(-1.8,1.8),vy:random(-2.5,-0.3),size:random(H*0.013,H*0.03),hue:letterHue[c],c:c,life:1.0});}}
+
+// ── Flow ──
+function enterInput(){
+  initAudio(); // 這個觸摸啟動音訊
+  mode='input';
+  hideAllCtrls();
+  document.getElementById('resetBtn').style.display='';
+  document.getElementById('doneBtn').style.display='';
+  kbButtons.forEach(b=>b.style.display='');
+}
+function showResult(){if(letterSequence.length===0)return;mode='transition1';transitionEnterTime=millis();kbButtons.forEach(b=>b.style.display='none');hideAllCtrls();}
+function startPlayback(){initAudio();startDrone();playIndex=0;playTimer=millis();isPlaying=true;autoSummaryScheduled=false;ripples=[];fallers=[];}
+function replayFromSummary(){mode='playback';hasSeenSummary=true;hideAllCtrls();startPlayback();}
+function onPlaybackFinished(){if(!hasSeenSummary){setTimeout(()=>{if(mode==='playback'){mode='transition2';transitionEnterTime=millis();hideAllCtrls();}},800);}else{hideAllCtrls();document.getElementById('pbReplayBtn').style.display='';document.getElementById('pbSummaryBtn').style.display='';document.getElementById('pbRestartBtn').style.display='';}}
+function showSummary(){mode='summary';isPlaying=false;stopDrone();hasSeenSummary=true;summaryEnterTime=millis();hideAllCtrls();document.getElementById('sumReplayBtn').style.display='';document.getElementById('sumRestartBtn').style.display='';}
+function resetAll(){mode='input';letterSequence=[];pauseSequence=[];lastPressTime=0;for(let c of alphabet)letterCount[c]=0;isPlaying=false;playIndex=0;particles=[];ripples=[];fallers=[];currentPulse=0;autoSummaryScheduled=false;hasSeenSummary=false;stopDrone();kbButtons.forEach(b=>b.style.display='');hideAllCtrls();document.getElementById('resetBtn').style.display='';document.getElementById('doneBtn').style.display='';}
+function hideAllCtrls(){['startBtn','resetBtn','doneBtn','pbReplayBtn','pbSummaryBtn','pbRestartBtn','sumReplayBtn','sumRestartBtn'].forEach(id=>{let el=document.getElementById(id);if(el)el.style.display='none';});}
+
+function draw(){
+  background(0,0,4);
+  if(mode==='start') drawStartScreen();
+  else if(mode==='input') drawInputView();
+  else if(mode==='transition1'){drawTransition1();handleTransition1();}
+  else if(mode==='playback'){drawPlaybackView();if(isPlaying)handlePlayback();}
+  else if(mode==='transition2'){drawTransition2();handleTransition2();}
+  else if(mode==='summary') drawSummaryView();
+  for(let i=particles.length-1;i>=0;i--){let p=particles[i];p.x+=p.vx;p.y+=p.vy;p.vy-=0.015;p.life-=0.012;if(p.life<=0){particles.splice(i,1);continue;}noStroke();fill(p.hue,50,70,p.life*60);textAlign(CENTER,CENTER);textSize(p.size*p.life);text(p.c,p.x,p.y);}
+}
+
+let thermalImg=null;
+
+function preload(){
+  thermalImg=loadImage('thermal-bg.png');
+}
+
+function drawStartScreen(){
+  let cx=W/2, cy=H*0.5;
+
+  // 背景圖 cover：永遠填滿整個畫面，不留黑邊
+  if(thermalImg){
+    let imgRatio=thermalImg.width/thermalImg.height;
+    let canvasRatio=W/H;
+    let dw,dh,dx,dy;
+    if(canvasRatio>imgRatio){
+      dw=W; dh=W/imgRatio; dx=0; dy=(H-dh)/2;
+    } else {
+      dh=H; dw=H*imgRatio; dx=(W-dw)/2; dy=0;
+    }
+    image(thermalImg,dx,dy,dw,dh);
+  } else {
+    background(0,0,8);
+  }
+
+  // 掃描線質感
+  noFill();
+  for(let y=0;y<H;y+=4){
+    stroke(0,0,0,5);strokeWeight(0.7);
+    line(0,y,W,y);
+  }
+  noStroke();
+
+  // 標題置中
+  drawTitle(W/2, H/2);
+}
+
+function drawTitle(cx, cy){
+  let maxByWidth = (W * 0.88) / (9 * 0.62);
+  let sz = min(maxByWidth, H * 0.17);
+  push();
+  textAlign(CENTER,CENTER);
+  drawingContext.font = `normal ${sz}px Anton, "Arial Black", Arial, sans-serif`;
+
+  // 暗沉紅外框（極細）
+  let padX = sz * 0.18;
+  let padY = sz * 0.12;
+  let lineW = max(W * 0.0012, 0.8);
+  let r = sz * 0.04;
+
+  let wBody = drawingContext.measureText('Body').width;
+  let wSig  = drawingContext.measureText('Signature').width;
+  let yBody = cy - sz * 0.54;
+  let ySig  = cy + sz * 0.54;
+
+  drawingContext.save();
+  drawingContext.strokeStyle = 'rgba(120, 20, 20, 0.75)';
+  drawingContext.lineWidth = lineW;
+  drawingContext.shadowColor = 'rgba(180, 30, 30, 0.25)';
+  drawingContext.shadowBlur = 6;
+
+  // Body 框
+  let bx = cx - wBody/2 - padX;
+  let by = yBody - sz*0.55 - padY;
+  let bw = wBody + padX*2;
+  let bh = sz*0.85 + padY*2;
+  drawingContext.beginPath();
+  drawingContext.roundRect(bx, by, bw, bh, r);
+  drawingContext.stroke();
+
+  // Signature 框
+  let sx2 = cx - wSig/2 - padX;
+  let sy2 = ySig - sz*0.55 - padY;
+  let sw  = wSig + padX*2;
+  let sh  = sz*0.85 + padY*2;
+  drawingContext.beginPath();
+  drawingContext.roundRect(sx2, sy2, sw, sh, r);
+  drawingContext.stroke();
+
+  drawingContext.restore();
+
+  noStroke();
+  fill(0,0,0,96);
+  text('Body',      cx, cy - sz*0.54);
+  text('Signature', cx, cy + sz*0.54);
+  pop();
+}
+
+
+// ── Transition 1：打完字，準備播放 ──
+function drawTransition1(){
+  let cx=W/2, elapsed=millis()-transitionEnterTime;
+  let lines=[
+    '你剛才打的每一個字母',
+    '都被記下來了。',
+    '',
+    '現在，讓我們重新播放你剛剛的軌跡。'
+  ];
+  // 總時長 5500ms，最後一句在 4500ms 出現，留 1 秒後跳
+  let delays=[0, 900, 1800, 2600];
+  let lineH=min(H*0.055,40);
+  let totalH=lines.length*lineH;
+  let startY=H*0.5-totalH/2;
+  for(let i=0;i<lines.length;i++){
+    let fade=constrain((elapsed-delays[i])/700,0,1);
+    if(fade<=0)continue;
+    fill(0,0,fade*70);noStroke();textFont('monospace');
+    let sz=lines[i]===''?0:min(H*0.026,20);
+    textSize(sz);textAlign(CENTER,CENTER);textStyle(NORMAL);
+    text(lines[i],cx,startY+i*lineH);
+  }
+  if(elapsed>800){
+    let hue=(elapsed*0.05)%360;
+    fill(hue,30,40,8);noStroke();
+    ellipse(cx+sin(elapsed*0.001)*W*0.1, H*0.5, W*0.6, H*0.3);
+  }
+}
+function handleTransition1(){
+  let elapsed=millis()-transitionEnterTime;
+  if(elapsed>5500){
+    mode='playback';
+    hideAllCtrls();
+    startPlayback();
+  }
+}
+
+// ── Transition 2：播完音樂，準備進報告 ──
+function drawTransition2(){
+  let cx=W/2, elapsed=millis()-transitionEnterTime;
+
+  let fade0=constrain((elapsed-200)/700,0,1);
+  let fade1=constrain((elapsed-1200)/800,0,1);
+  let fade2=constrain((elapsed-2100)/900,0,1);
+  let fade2b=constrain((elapsed-2900)/900,0,1);
+  let fade2c=constrain((elapsed-3700)/900,0,1);
+  let fade4=constrain((elapsed-5200)/800,0,1);
+
+  let lh=min(H*0.072,52);
+  let startY=H*0.28;
+  let sz=min(H*0.026,20);
+
+  if(fade0>0){
+    fill(0,0,fade0*65);noStroke();textFont('monospace');
+    textSize(sz);textAlign(CENTER,CENTER);textStyle(NORMAL);
+    text('你的音樂停了。',cx,startY);
+  }
+  if(fade1>0){
+    fill(0,0,fade1*65);noStroke();textFont('monospace');
+    textSize(sz);textAlign(CENTER,CENTER);textStyle(NORMAL);
+    text('你剛才是在打字嗎？',cx,startY+lh*1.3);
+  }
+  if(fade2>0){
+    fill(0,0,fade2*65);noStroke();textFont('monospace');
+    textSize(sz);textAlign(CENTER,CENTER);textStyle(NORMAL);
+    text('還是你的手在追蹤節奏，',cx,startY+lh*2.3);
+  }
+  if(fade2b>0){
+    fill(0,0,fade2b*65);noStroke();textFont('monospace');
+    textSize(sz);textAlign(CENTER,CENTER);textStyle(NORMAL);
+    text('還是眼睛在追蹤顏色？',cx,startY+lh*3.3);
+  }
+  if(fade2c>0){
+    fill(0,0,fade2c*96);noStroke();textFont('monospace');
+    textSize(sz);textAlign(CENTER,CENTER);textStyle(BOLD);
+    text('你的身體比你想像的透露了更多訊息。',cx,startY+lh*4.6);
+  }
+  if(fade4>0){
+    let blink=sin(elapsed*0.004)*0.4+0.6;
+    fill(0,0,fade4*75*blink);noStroke();textFont('monospace');
+    textSize(min(H*0.018,14));textAlign(CENTER,CENTER);textStyle(NORMAL);
+    text('點擊這裡，看你的身體留下了什麼',cx,H*0.88);
+    let tw=textWidth('點擊這裡，看你的身體留下了什麼');
+    stroke(0,0,fade4*40*blink);strokeWeight(0.8);
+    line(cx-tw/2,H*0.88+min(H*0.018,13),cx+tw/2,H*0.88+min(H*0.018,13));
+  }
+}
+function handleTransition2(){
+  // 不自動跳，等使用者點擊
+}
+
+// ═══════════════════
+// INPUT VIEW
+// ═══════════════════
+function drawInputView(){
+  let px=W*0.06;fill(0,0,65);noStroke();textFont('monospace');textSize(min(H*0.02,16));textAlign(LEFT,TOP);text('身體簽名',px,H*0.03);
+  fill(0,0,40);textSize(min(H*0.015,12));text(letterSequence.length>0?letterSequence.length+' 個字母':'開始打字',px,H*0.06);
+  if(letterSequence.length>0)drawLiveWave(px);drawCloud(px);
+}
+function drawLiveWave(px){
+  let total=letterSequence.length,dw=W-px*2,by=H*0.3,mh=H*0.14;let minP=Infinity,maxP=-Infinity;
+  for(let c of letterSequence){let p=letterFreq[c];if(p<minP)minP=p;if(p>maxP)maxP=p;}if(minP===maxP){minP-=100;maxP+=100;}
+  noFill();beginShape();for(let i=0;i<total;i++){let c=letterSequence[i],x=px+(i/max(total-1,1))*dw,nP=(letterFreq[c]-minP)/(maxP-minP),y=by+mh*0.5-nP*mh;stroke(letterHue[c],50,65,45);strokeWeight(1.5);vertex(x,y);}endShape();
+  for(let i=0;i<total;i++){let c=letterSequence[i],x=px+(i/max(total-1,1))*dw,nP=(letterFreq[c]-minP)/(maxP-minP),y=by+mh*0.5-nP*mh;let last=(i===total-1);noStroke();fill(letterHue[c],last?75:50,last?100:70,last?95:70);textAlign(CENTER,CENTER);textSize(last?min(H*0.022,16):min(H*0.014,11));text(c,x,y);}
+}
+function drawCloud(px){
+  let mc=max(1,max(Object.values(letterCount))),ty=H*0.44,ah=H*0.16;
+  for(let r=0;r<rows.length;r++){let row=rows[r];for(let i=0;i<row.length;i++){let c=row[i],cnt=letterCount[c];let xR=(i+(r===1?0.5:r===2?1.5:0))/10,yR=r/3,x=px+xR*(W-px*2),y=ty+yR*ah,ratio=cnt/mc;let sz=cnt===0?min(H*0.015,11):map(ratio,0,1,H*0.018,H*0.05);let h=letterHue[c],bri=cnt===0?20:map(ratio,0,1,45,100),sat=cnt===0?0:map(ratio,0,1,30,80);noStroke();fill(h,sat,bri);textAlign(CENTER,CENTER);textSize(sz);textStyle(ratio>0.6?BOLD:NORMAL);text(c,x,y);}}
+}
+
+// ═══════════════════
+// PLAYBACK VIEW — 垂直敘事
+// 天空（折線）→ 墜落 → 水面（漣漪）→ 沉積（鍵盤）
+// ═══════════════════
+// 佈局常數
+const SKY_TOP=0.02, SKY_H=0.25;      // 天空：折線
+const WATER_Y=0.52;                    // 水面線
+const SEDIMENT_TOP=0.70, SEDIMENT_H=0.20; // 沉積：鍵盤
+
+function drawPlaybackView(){
+  let px=W*0.06;currentPulse*=0.9;
+  
+  // 水面線（淡淡的水平線）
+  stroke(0,0,12);strokeWeight(0.5);
+  line(px,H*WATER_Y,W-px,H*WATER_Y);
+  noStroke();
+  
+  drawSky(px);
+  updateFallers();
+  drawFallers();
+  drawWater(px);
+  drawSediment(px);
+  
+  // 提示文字
+  if(!hasSeenSummary && isPlaying){
+    let blink=sin(millis()*0.003)*0.3+0.7;
+    fill(0,0,45*blink);noStroke();textFont('monospace');
+    textSize(min(H*0.02,15));textAlign(CENTER,TOP);
+    text('— 播放結束後將為你生成分析報告 —',W/2,H*0.92);
+  }
+  if(!hasSeenSummary && !isPlaying && autoSummaryScheduled){
+    fill(0,0,55);noStroke();textFont('monospace');
+    textSize(min(H*0.02,15));textAlign(CENTER,TOP);
+    text('正在生成你的報告⋯',W/2,H*0.92);
+  }
+}
+
+// ── 天空：聲音折線 ──
+function drawSky(px){
+  let total=letterSequence.length;
+  let aT=H*SKY_TOP, aH=H*SKY_H;
+  let cY=aT+aH*0.5, dw=W-px*2, wH=aH*0.7;
+  
+  let minP=Infinity,maxP=-Infinity;
+  for(let c of letterSequence){let p=letterFreq[c];if(p<minP)minP=p;if(p>maxP)maxP=p;}
+  if(minP===maxP){minP-=100;maxP+=100;}
+  
+  // 背景脈衝
+  if(currentPulse>0.05){
+    let pR=currentPulse*min(W,aH)*0.4;
+    for(let ring=3;ring>0;ring--){
+      fill(currentPlayHue,45,65,currentPulse*(ring/3)*8);noStroke();
+      ellipse(W/2,cY,pR*(1+ring*0.3)*2,pR*(1+ring*0.3));
+    }
+  }
+  
+  // 折線
+  for(let i=1;i<total;i++){
+    if((pauseSequence[i]||200)>1200)continue;
+    let c0=letterSequence[i-1],c1=letterSequence[i];
+    let x0=px+((i-1)/max(total-1,1))*dw, x1=px+(i/max(total-1,1))*dw;
+    let nP0=(letterFreq[c0]-minP)/(maxP-minP), nP1=(letterFreq[c1]-minP)/(maxP-minP);
+    let y0=cY+wH*0.5-nP0*wH, y1=cY+wH*0.5-nP1*wH;
+    let isPast=i<playIndex, isNow=i===playIndex-1;
+    stroke(letterHue[c1],isPast?25:(isNow?85:55),isPast?40:(isNow?100:75),isPast?40:(isNow?95:65));
+    strokeWeight(isNow?3:1.5);line(x0,y0,x1,y1);
+  }
+  
+  // 字母點
+  for(let i=0;i<total;i++){
+    let c=letterSequence[i], x=px+(i/max(total-1,1))*dw;
+    let nP=(letterFreq[c]-minP)/(maxP-minP), y=cY+wH*0.5-nP*wH;
+    let isPast=i<playIndex, isNow=(isPlaying && i===playIndex-1);
+    noStroke();
+    if(isNow){
+      fill(letterHue[c],75,100,30);circle(x,y,H*0.05);
+      fill(letterHue[c],75,100,95);
+      textAlign(CENTER,CENTER);textSize(min(H*0.03,22));textStyle(BOLD);text(c,x,y);
+    } else {
+      fill(letterHue[c],isPast?18:50,isPast?38:88,isPast?42:82);
+      textAlign(CENTER,CENTER);textSize(min(H*0.018,13));textStyle(NORMAL);text(c,x,y);
+    }
+  }
+  
+  // 進度線
+  if(playIndex>0){
+    let prog=playIndex/total;
+    stroke(0,0,15);strokeWeight(0.5);line(px,aT+aH+2,px+dw,aT+aH+2);
+    stroke(currentPlayHue,50,60,50);strokeWeight(1.5);line(px,aT+aH+2,px+prog*dw,aT+aH+2);
+  }
+}
+
+// ── 墜落的字母 ──
+function spawnFaller(c,startX,startY){
+  let h=letterHue[c];
+  fallers.push({
+    x: startX,
+    y: startY,
+    vy: 1.5, // 初始速度
+    gravity: 0.15,
+    hue: h,
+    c: c,
+    size: min(H*0.022,16),
+    alpha: 85,
+    landed: false
+  });
+}
+
+function updateFallers(){
+  let waterLine=H*WATER_Y;
+  for(let i=fallers.length-1;i>=0;i--){
+    let f=fallers[i];
+    if(f.landed){
+      f.alpha-=1.5;
+      if(f.alpha<=0){fallers.splice(i,1);}
+      continue;
+    }
+    f.vy+=f.gravity;
+    f.y+=f.vy;
+    // 落到水面
+    if(f.y>=waterLine){
+      f.y=waterLine;
+      f.landed=true;
+      // 激起漣漪！
+      spawnRipple(f.c, f.x);
+      // 水花粒子
+      for(let j=0;j<5;j++){
+        particles.push({
+          x:f.x+random(-5,5), y:waterLine+random(-8,2),
+          vx:random(-2,2), vy:random(-3,-0.5),
+          size:random(H*0.008,H*0.015), hue:f.hue, c:f.c, life:0.8
+        });
+      }
+    }
+  }
+}
+
+function drawFallers(){
+  for(let f of fallers){
+    noStroke();
+    fill(f.hue, 60, 90, f.alpha);
+    textAlign(CENTER,CENTER);
+    textSize(f.size * (f.landed ? 0.7 : 1));
+    textStyle(NORMAL);
+    text(f.c, f.x, f.y);
+    // 尾跡
+    if(!f.landed && f.vy > 2){
+      fill(f.hue, 40, 60, f.alpha * 0.3);
+      textSize(f.size * 0.6);
+      text(f.c, f.x, f.y - f.vy * 1.5);
+    }
+  }
+}
+
+// ── 水面：漣漪 ──
+function drawWater(px){
+  let waterLine=H*WATER_Y;
+  let maxR2=min(W*0.45, H*0.2);
+  
+  // 更新和繪製漣漪
+  for(let i=ripples.length-1;i>=0;i--){
+    let rp=ripples[i];
+    rp.r+=rp.speed;
+    rp.alpha-=0.35; // 慢慢消散（比之前慢很多）
+    if(rp.alpha<=0){ripples.splice(i,1);continue;}
+    
+    noFill();
+    stroke(rp.hue,45,65,rp.alpha);
+    strokeWeight(map(rp.alpha,0,50,0.3,1.8));
+    // 橢圓形漣漪（水面視角）
+    ellipse(rp.ox, waterLine, rp.r*2, rp.r*0.6);
+    
+    // 小字母在圈內
+    if(rp.r<maxR2*0.3 && rp.alpha>20){
+      noStroke();fill(rp.hue,40,75,rp.alpha*0.8);
+      textAlign(CENTER,CENTER);textSize(min(H*0.012,9));textStyle(NORMAL);
+      text(rp.c, rp.ox, waterLine);
+    }
+  }
+  
+  // 靜態：播放結束後的水面痕跡
+  if(!isPlaying && ripples.length===0 && letterSequence.length>0){
+    noStroke();fill(0,0,20);textAlign(CENTER,CENTER);
+    textSize(min(H*0.011,9));
+    text('漣漪已散',W/2,waterLine);
+  }
+}
+
+function spawnRipple(c,originX){
+  let h=letterHue[c];
+  let freq=letterFreq[c];
+  let normFreq=map(freq,130,1400,1,0);
+  let maxR2=min(W*0.45,H*0.2);
+  let speed=map(normFreq,0,1,1.0,2.0);
+  
+  ripples.push({
+    r:5, hue:h, c:c,
+    alpha:50, speed:speed,
+    ox:originX // 漣漪從字母落點擴散
+  });
+}
+
+// ── 沉積：熱力鍵盤 ──
+function drawSediment(px){
+  let aT=H*SEDIMENT_TOP, aH=H*SEDIMENT_H;
+  let sorted=Object.keys(letterCount).filter(c=>letterCount[c]>0);if(sorted.length===0)return;
+  let mc=max(...Object.values(letterCount));
+  let kbAT=aT+H*0.01, kbAH=aH-H*0.02, gap=W*0.008;
+  let baseBW=(W-px*2-gap*9)/10, btnH2=kbAH/3.5;
+  
+  for(let r=0;r<rows.length;r++){
+    let row=rows[r], rbw=r===2?(W-px*2-gap*6)/7:baseBW;
+    let rw2=row.length*(rbw+gap)-gap, sx2=(W-rw2)/2;
+    let y=kbAT+r*(btnH2+gap*0.8);
+    for(let i=0;i<row.length;i++){
+      let c=row[i], x=sx2+i*(rbw+gap), cnt=letterCount[c], ratio=cnt/mc, h=letterHue[c];
+      let isAK=isPlaying&&playIndex>0&&letterSequence[playIndex-1]===c;
+      if(cnt===0){
+        stroke(0,0,12);strokeWeight(0.5);noFill();rect(x,y,rbw,btnH2,2);
+        fill(0,0,18);textAlign(CENTER,CENTER);textSize(min(btnH2*0.35,12));textStyle(NORMAL);text(c,x+rbw/2,y+btnH2/2);
+      } else {
+        let sc=map(ratio,0,1,1,1.15),dW=rbw*sc,dH2=btnH2*sc;
+        let dX=x+(rbw-dW)/2,dY=y+(btnH2-dH2)/2;
+        let bri=map(ratio,0,1,35,95),sat=map(ratio,0,1,30,75);
+        if(isAK){
+          // 正在播放：亮起（沉積物被激活）
+          fill(h,80,100,20);noStroke();rect(dX-4,dY-4,dW+8,dH2+8,6);
+          fill(h,80,100,60);rect(dX,dY,dW,dH2,3);
+          fill(h,30,100);textAlign(CENTER,CENTER);textSize(min(dH2*0.48,18));textStyle(BOLD);
+          text(c,x+rbw/2,y+btnH2/2);
+          fill(h,40,85);textSize(min(dH2*0.26,10));textStyle(NORMAL);
+          text(cnt,x+rbw/2,y+btnH2/2+dH2*0.33);
+        } else {
+          noStroke();fill(h,sat*0.4,bri*0.3,30);rect(dX,dY,dW,dH2,3);
+          fill(h,sat,bri);textAlign(CENTER,CENTER);textSize(min(dH2*0.45,16));textStyle(ratio>0.5?BOLD:NORMAL);
+          text(c,x+rbw/2,y+btnH2/2);
+          if(ratio>0.3){fill(h,sat*0.6,bri*0.8);textSize(min(dH2*0.24,10));textStyle(NORMAL);text(cnt,x+rbw/2,y+btnH2/2+dH2*0.34);}
+        }
+      }
+    }
+  }
+}
+
+// ═══════════════════
+// SUMMARY VIEW
+// ═══════════════════
+function typewriterText(str,x,y,startSec,charSpeed,sz,bright){
+  let elapsed=millis()-summaryEnterTime-startSec*1000;if(elapsed<0)return false;
+  let chars=min(floor(elapsed/(charSpeed*1000)),str.length),shown=str.substring(0,chars);
+  fill(0,0,bright);textSize(sz);textAlign(LEFT,TOP);textStyle(NORMAL);text(shown,x,y);
+  if(chars<str.length){let blink=sin(millis()*0.008)>0;if(blink){let tw=textWidth(shown);fill(0,0,50);rect(x+tw+2,y+2,2,sz*0.8);}}
+  return chars>=str.length;
+}
+
+function drawSummaryView(){
+  let px=W*0.06,total=letterSequence.length;
+  let uniqueLetters=Object.keys(letterCount).filter(c=>letterCount[c]>0);
+  let sorted=[...uniqueLetters].sort((a,b)=>letterCount[b]-letterCount[a]);
+  let top3=sorted.slice(0,3),mc=letterCount[sorted[0]]||1;
+  let avgPause=pauseSequence.reduce((a,b)=>a+b,0)/pauseSequence.length;
+  let longestPause=0,longestIdx=0;
+  for(let i=1;i<pauseSequence.length;i++){if(pauseSequence[i]>longestPause){longestPause=pauseSequence[i];longestIdx=i;}}
+  let fastCount=pauseSequence.filter(p=>p<300).length,slowCount=pauseSequence.filter(p=>p>1000).length,fastRatio=fastCount/total;
+  
+  textFont('monospace');noStroke();
+  
+  // ── 統一間距系統 ──
+  // 可用高度：H*0.03 到 H*0.90（按鈕在 0.93）
+  // 區塊：鍵盤(0.03-0.24) → 猶豫(0.26-0.40) → 診斷(0.42-0.56) → 節奏條+數字(0.58-0.74) → 波形(0.76-0.88)
+  
+  // ── 1. 手指住在這裡 ──
+  typewriterText('你的手指住在這裡',px,H*0.03,0,0.06,min(H*0.024,18),70);
+  let fadeKB=constrain((millis()-summaryEnterTime-1200)/800,0,1);
+  if(fadeKB>0){
+    let mkTop=H*0.075,mkH=H*0.15,mkGap=W*0.006,mkBW=(W-px*2-mkGap*9)/10,mkBH=mkH/3.5;
+    for(let r=0;r<rows.length;r++){let row=rows[r],rbw=r===2?(W-px*2-mkGap*6)/7:mkBW;let rw2=row.length*(rbw+mkGap)-mkGap,sx=(W-rw2)/2,y=mkTop+r*(mkBH+mkGap*0.8);
+      for(let i=0;i<row.length;i++){let c=row[i],x=sx+i*(rbw+mkGap),cnt=letterCount[c],ratio=cnt/mc,h=letterHue[c],isT=top3.includes(c);
+        if(cnt===0){stroke(0,0,12*fadeKB);strokeWeight(0.5);noFill();rect(x,y,rbw,mkBH,2);}
+        else{noStroke();let bri=map(ratio,0,1,28,92)*fadeKB,sat=map(ratio,0,1,25,70);
+          if(isT){let pulse=sin(millis()*0.003+top3.indexOf(c)*2)*0.15+0.85,sc2=map(ratio,0,1,1,1.2)*pulse,dW=rbw*sc2,dH=mkBH*sc2,dX=x+(rbw-dW)/2,dY=y+(mkBH-dH)/2;
+            fill(h,sat*0.5,bri*0.5,25*fadeKB);rect(dX-3,dY-3,dW+6,dH+6,5);fill(h,sat,bri,70*fadeKB);rect(dX,dY,dW,dH,3);
+            fill(h,30,100*fadeKB);textAlign(CENTER,CENTER);textSize(min(dH*0.52,18));textStyle(BOLD);text(c,x+rbw/2,y+mkBH/2);
+            fill(h,40,82*fadeKB);textSize(min(dH*0.3,11));textStyle(NORMAL);text(cnt+'次',x+rbw/2,y+mkBH/2+dH*0.38);}
+          else{fill(h,sat*0.4,bri*0.3,30*fadeKB);rect(x,y,rbw,mkBH,2);fill(h,sat,bri);textAlign(CENTER,CENTER);textSize(min(mkBH*0.4,13));textStyle(NORMAL);text(c,x+rbw/2,y+mkBH/2);}}}}}
+  
+  // ── 2. 最長猶豫 ──
+  typewriterText('你最長的猶豫',px,H*0.26,2.0,0.07,min(H*0.024,18),70);
+  let fadePause=constrain((millis()-summaryEnterTime-3000)/800,0,1);
+  if(fadePause>0&&longestIdx>0){
+    let before=letterSequence[longestIdx-1],after=letterSequence[longestIdx],hB=letterHue[before],hA=letterHue[after];
+    let centerX=W/2,dotY=H*0.32;
+    fill(hB,60,90*fadePause);textAlign(CENTER,CENTER);textSize(min(H*0.045,32));textStyle(BOLD);text(before,centerX-W*0.14,dotY);
+    noFill();stroke(0,0,35*fadePause);strokeWeight(0.8);for(let dx=-W*0.06;dx<W*0.06;dx+=8){line(centerX+dx,dotY,centerX+dx+4,dotY);}
+    noStroke();fill(0,0,70*fadePause);textSize(min(H*0.02,16));textStyle(NORMAL);textAlign(CENTER,BOTTOM);text(nf(longestPause/1000,1,1)+' 秒',centerX,dotY-H*0.02);
+    fill(hA,60,90*fadePause);textAlign(CENTER,CENTER);textSize(min(H*0.045,32));textStyle(BOLD);text(after,centerX+W*0.14,dotY);
+    fill(0,0,42*fadePause);textSize(min(H*0.013,10));textStyle(NORMAL);textAlign(CENTER,TOP);text('第 '+longestIdx+' → '+(longestIdx+1)+' 個字母之間',centerX,dotY+H*0.03);}
+  
+  // ── 3. 診斷 ──
+  let descriptions=[];
+  let firstHalf=pauseSequence.slice(0,Math.floor(total/2)),secondHalf=pauseSequence.slice(Math.floor(total/2));
+  let avgFirst=firstHalf.reduce((a,b)=>a+b,0)/firstHalf.length;
+  let avgSecond=secondHalf.length>0?secondHalf.reduce((a,b)=>a+b,0)/secondHalf.length:avgFirst;
+  if(avgSecond>avgFirst*1.8&&total>10)descriptions.push('前快後慢 — 一開始衝很快，後來漸漸迷失');
+  else if(avgFirst>avgSecond*1.8&&total>10)descriptions.push('前慢後快 — 摸索了一陣子，然後找到手感');
+  else if(fastRatio>0.7)descriptions.push('連打型 — 你的手指幾乎不猶豫');
+  else if(fastRatio>0.4)descriptions.push('混合型 — 在探索和決定之間來回');
+  else if(slowCount>total*0.3)descriptions.push('沉思型 — 每個鍵都是一次慎重的選擇');
+  else descriptions.push('即興型 — 你的節奏沒有規則可循');
+  if(total<10)descriptions.push('極簡主義者 — 只留下最少的痕跡');
+  else if(total>80)descriptions.push('話很多 — 你跟鍵盤聊了很久');
+  else if(total>50)descriptions.push('你打了不少，好像有話想說');
+  let coverage=uniqueLetters.length/26;
+  if(coverage>0.7)descriptions.push('探索者 — 幾乎踏遍了整個鍵盤');
+  else if(coverage<0.25)descriptions.push('習慣的囚徒 — 手指只在少數鍵上來回');
+  let avgFreq=0;for(let c of letterSequence)avgFreq+=letterFreq[c];avgFreq/=total;
+  if(avgFreq>680)descriptions.push('你的聲音偏高，聽起來明亮而急促');
+  else if(avgFreq<380)descriptions.push('你的聲音偏低，像是在沉默中思考');
+  
+  let diagTop=H*0.42;
+  let diagLineH=min(H*0.035,26);
+  let mainHue=letterHue[sorted[0]]||200;
+  
+  for(let d=0;d<min(descriptions.length,4);d++){
+    let startDelay=3.8+d*1.0;
+    let elapsed2=millis()-summaryEnterTime-startDelay*1000;
+    if(elapsed2<0)continue;
+    let str2=descriptions[d],chars2=min(floor(elapsed2/45),str2.length),shown2=str2.substring(0,chars2),done2=chars2>=str2.length;
+    let isFirst=(d===0);
+    let sz2=isFirst?min(H*0.022,17):min(H*0.017,13);
+    let lineHue=(mainHue+d*40)%360;
+    let bright2=isFirst?85:70;
+    let sat2=isFirst?45:35;
+    noStroke();fill(lineHue,sat2,bright2);
+    textSize(sz2);textAlign(CENTER,TOP);textStyle(isFirst?BOLD:NORMAL);
+    text(shown2,W/2,diagTop+d*diagLineH);
+    if(!done2){let blink=sin(millis()*0.008)>0;if(blink){let tw2=textWidth(shown2);fill(lineHue,30,60);rect(W/2+tw2/2+2,diagTop+d*diagLineH+3,2,sz2*0.75);}}}
+  
+  // ── 4. 停頓分布條 ──
+  let allDiagN=min(descriptions.length,4);
+  let barDelay=3.8+allDiagN*1.0+0.5;
+  let fadeBar=constrain((millis()-summaryEnterTime-barDelay*1000)/800,0,1);
+  if(fadeBar>0){
+    let barTop=H*0.60,barH2=H*0.07;
+    let barW=max((W-px*2)/pauseSequence.length-1,2),maxPV=max(...pauseSequence);
+    for(let i=0;i<pauseSequence.length;i++){let pause=pauseSequence[i],ratio=pause/maxPV,bH=ratio*barH2,x=px+(i/pauseSequence.length)*(W-px*2);let c=letterSequence[i],h=letterHue[c],isL=(i===longestIdx);noStroke();fill(h,isL?70:35,(isL?90:55)*fadeBar,(isL?70:45)*fadeBar);rect(x,barTop+barH2-bH,barW,bH,1);}}
+  
+  // ── 5. 數字 ──
+  let numDelay=barDelay+0.6;
+  let fadeNum=constrain((millis()-summaryEnterTime-numDelay*1000)/800,0,1);
+  if(fadeNum>0){
+    let secY=H*0.72,col1X=W*0.2,col2X=W*0.5,col3X=W*0.8;
+    fill(0,0,60*fadeNum);textAlign(CENTER,CENTER);textSize(min(H*0.032,24));textStyle(BOLD);text(total,col1X,secY);fill(0,0,35*fadeNum);textSize(min(H*0.011,9));textStyle(NORMAL);text('個字母',col1X,secY+H*0.03);
+    fill(0,0,60*fadeNum);textSize(min(H*0.032,24));textStyle(BOLD);text(uniqueLetters.length,col2X,secY);fill(0,0,35*fadeNum);textSize(min(H*0.011,9));textStyle(NORMAL);text('/ 26 個鍵',col2X,secY+H*0.03);
+    fill(0,0,60*fadeNum);textSize(min(H*0.032,24));textStyle(BOLD);text(nf(avgPause/1000,1,1)+'s',col3X,secY);fill(0,0,35*fadeNum);textSize(min(H*0.011,9));textStyle(NORMAL);text('平均停頓',col3X,secY+H*0.03);}
+  
+  // ── 6. 波形 ──
+  let wDelay=numDelay+0.4;let fadeW=constrain((millis()-summaryEnterTime-wDelay*1000)/800,0,1);
+  if(fadeW>0){let wTop=H*0.80,wH2=H*0.08;let minP2=Infinity,maxP2=-Infinity;for(let c of letterSequence){let p=letterFreq[c];if(p<minP2)minP2=p;if(p>maxP2)maxP2=p;}if(minP2===maxP2){minP2-=100;maxP2+=100;}noFill();for(let i=1;i<total;i++){if((pauseSequence[i]||200)>1200)continue;let c0=letterSequence[i-1],c1=letterSequence[i];let x0=px+((i-1)/max(total-1,1))*(W-px*2),x1=px+(i/max(total-1,1))*(W-px*2);let nP0=(letterFreq[c0]-minP2)/(maxP2-minP2),nP1=(letterFreq[c1]-minP2)/(maxP2-minP2);let y0=wTop+wH2*0.5-nP0*wH2,y1=wTop+wH2*0.5-nP1*wH2;stroke(letterHue[c1],45,58*fadeW,50*fadeW);strokeWeight(1.3);line(x0,y0,x1,y1);}}
+}
+
+// ── Playback ──
+function handlePlayback(){
+  if(playIndex>=letterSequence.length){isPlaying=false;if(!autoSummaryScheduled){autoSummaryScheduled=true;onPlaybackFinished();}return;}
+  let cp=pauseSequence[playIndex]||300,pp=max(cp*0.7,80);
+  if(millis()-playTimer>pp){
+    let c=letterSequence[playIndex],freq=letterFreq[c],h=letterHue[c];
+    playTone(freq,0.4);currentPulse=1.0;currentPlayHue=h;
+    
+    // 計算折線上的位置
+    let px2=W*0.06,dw=W-px2*2,total=letterSequence.length;
+    let ptX=px2+(playIndex/max(total-1,1))*dw;
+    let minP=Infinity,maxP=-Infinity;
+    for(let cc of letterSequence){let p2=letterFreq[cc];if(p2<minP)minP=p2;if(p2>maxP)maxP=p2;}
+    if(minP===maxP){minP-=100;maxP+=100;}
+    let nP=(freq-minP)/(maxP-minP);
+    let aT=H*SKY_TOP, aH=H*SKY_H, cY=aT+aH*0.5, wH=aH*0.7;
+    let ptY=cY+wH*0.5-nP*wH;
+    
+    // 從折線位置噴出小粒子（天空中的閃光）
+    for(let i=0;i<2;i++){
+      particles.push({x:ptX+random(-5,5),y:ptY+random(-5,5),
+        vx:random(-1.5,1.5),vy:random(-2,0.5),
+        size:random(H*0.008,H*0.016),hue:h,c:c,life:0.6});
+    }
+    
+    // 生成墜落的字母（從折線掉向水面）
+    spawnFaller(c, ptX, ptY);
+    
+    playIndex++;playTimer=millis();
+  }
+}
+
+function touchStarted(){
+  if(mode==='transition2'){
+    let elapsed=millis()-transitionEnterTime;
+    if(elapsed>2000){showSummary();return false;}
+  }
+  return true;
+}
+function mousePressed(){
+  if(mode==='transition2'){
+    let elapsed=millis()-transitionEnterTime;
+    if(elapsed>2000)showSummary(); // 至少看完主句才能跳
+  }
+}
+function keyPressed(){if(mode==='start'){enterInput();return;}if(mode==='transition2'){let elapsed=millis()-transitionEnterTime;if(elapsed>2000)showSummary();return;}if(mode!=='input')return;let c=key.toLowerCase();if(alphabet.includes(c)){initAudio();pressLetter(c);}}
+</script>
+</body>
+</html>
